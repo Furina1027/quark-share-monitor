@@ -1,20 +1,25 @@
 # 自动监控任务合集
 
-一个用 **GitHub Actions** 跑定时任务的仓库。里面是三个互不相干的监控脚本，各自独立调度、独立通知。
+一个用 **GitHub Actions** 跑定时任务的仓库。里面是四个互不相干的监控脚本，各自独立调度、独立通知。
 
-> 仓库名还叫 `quark-share-monitor`（最初只为夸克那个任务建的），现在装了三件事，名字已经不太准确了。
+> 仓库名还叫 `quark-share-monitor`（最初只为夸克那个任务建的），现在装了四件事，名字已经不太准确了。
 
 ---
 
-## 三个任务
+## 四个任务
 
 | 任务 | 脚本 | 干什么 | 什么时候发邮件 |
 |---|---|---|---|
 | **夸克考研资料更新** | `quark_share_monitor.py` | 遍历指定分享目录树，对比快照找出新增 / 删除 / 改名 / 内容变化 | 有变化才发（邮件只汇总到老师 / 机构层级） |
 | **B站热门拉黑** | `bili_block.py` | 扫热门榜，标题 / 推荐理由 / 标签命中关键词就拉黑对应 UP 主 | 本次真拉黑了人才发 |
 | **南航研究生公告** | `nuaa_monitor.py` | 盯机电学院「研究生招生」栏目，按文章 ID 判断新公告 | 有新公告才发 |
+| **教育部招生规定** | `moe/教育部.py` | 盯教育部官方文件列表与新闻通稿，等 2027 年《全国硕士研究生招生工作管理规定》发布 | 命中才发（含部署新闻这类前兆信号） |
 
-三个任务都遵守同一条原则：**没变化就完全静默，不打扰。**
+四个任务都遵守同一条原则：**没变化就完全静默，不打扰。**
+
+`moe/` 是一个完整的监控包（入口 + `moe_monitor/` 子包），从本地版原样搬过来的，
+只是把 SMTP 授权码改成从环境变量读；产物（状态 / 日志 / 命中的正文）通过 `--state-dir` 指到缓存目录。
+
 
 ---
 
@@ -45,7 +50,7 @@ GitHub Actions 自带 cron 触发，但这个仓库的实测结果是：**配置
 
 所以改用外部定时器 `cron-job.org` 去调 GitHub 的 `workflow_dispatch` 接口 —— 这条路径走**实时事件通道**，秒级创建运行，绕开了那个不稳定的 cron 调度器。
 
-三个 workflow 文件里的 `schedule` 触发**仍然保留**，作为兜底。重复触发不会造成重复邮件：脚本都是"有新内容才发"，而且状态持久化在缓存里，第二次跑会正确判定"无变化"。
+四个 workflow 文件里的 `schedule` 触发**仍然保留**，作为兜底。重复触发不会造成重复邮件：脚本都是"有新内容才发"，而且状态持久化在缓存里，第二次跑会正确判定"无变化"。
 
 ---
 
@@ -93,9 +98,14 @@ GitHub Actions 每次跑都是一台**全新的机器**，跑完即销毁。所�
 …
 ```
 
-判断"老师 / 机构"这一层的规则：取路径里**第一个带编号前缀的目录**（`18.2027大牙`、`06.2027高途【唐静】`、
-`13.2027 机械`、`03.27政治PDF` 都算），没有编号目录时退回上一级。明细并没有丢 ——
-完整的逐条列表（含文件名、大小、时间）仍然写进 `quark_share_updates.log`，要查具体是哪些文件去那里看。
+判断"老师 / 机构"这一层的规则：取路径里**最深的那个「编号 + 4 位年份」目录**（`18.2027大牙`、
+`06.2027高途【唐静】`、`08.2027新东方【王江涛 易熙人】`、`13.2027 机械` 都算）。
+注意**学科那一级也带同样的编号**（`01.2027 Svip政治`），所以取最深的一个才不会停错层；
+课程级目录（`06.命题规律解析`、`17.【冲刺阶段-二轮刷题】`、`08.27考研…`）不带 4 位年份，不会误判。
+PDF 区那种没有年份编号的（`03.27政治PDF / 27徐涛PDF`），退回上一级目录。
+
+明细并没有丢 —— 完整的逐条列表（含文件名、大小、时间）仍然写进 `quark_share_updates.log`，
+里面分了【摘要】和【明细】两段，要查具体是哪些文件去那里看。
 
 想改回逐条列文件的旧格式：把 `quark_share_monitor.py` 里 `CONFIG['report_level']` 改成 `'detail'`，
 或运行时加 `--report-level detail`。
@@ -109,15 +119,20 @@ GitHub Actions 每次跑都是一台**全新的机器**，跑完即销毁。所�
 ├── .github/workflows/
 │   ├── monitor.yml          # 夸克：每小时第 7 分
 │   ├── bili-block.yml       # B站：每小时第 23 分
-│   └── nuaa-monitor.yml     # 南航：每小时第 41 分
+│   ├── nuaa-monitor.yml     # 南航：每小时第 41 分
+│   └── moe-monitor.yml      # 教育部：每小时第 13 分（外部定时器实际按每 20 分钟打）
 ├── quark_share_monitor.py   # 夸克分享更新监控
 ├── bili_block.py            # B站热门关键词拉黑
 ├── nuaa_monitor.py          # 南航机电学院公告监测
+├── moe/                     # 教育部招生规定发布监控（完整包）
+│   ├── 教育部.py            # 入口：--once / --dry-run / --test-mail / --state-dir
+│   ├── config.py            # 年份、关键词、数据源、邮箱、间隔
+│   └── moe_monitor/         # core / sources / monitor / notify / state
 ├── requirements.txt
 └── .gitignore
 ```
 
-三个任务错开分钟运行，避免同时打 GitHub API 和邮件服务器。
+四个任务错开分钟运行，避免同时打 GitHub API 和邮件服务器。
 
 ---
 
@@ -131,13 +146,13 @@ GitHub Actions 每次跑都是一台**全新的机器**，跑完即销毁。所�
 |---|---|
 | `QUARK_COOKIE` | 夸克网盘 cookie（导出格式：`a=1; b=2`） |
 | `BILI_COOKIE` | B站完整 cookie，必须含 `SESSDATA`、`bili_jct`、`DedeUserID` |
-| `SMTP_AUTH_CODE` | QQ 邮箱 SMTP 授权码（三个任务共用） |
+| `SMTP_AUTH_CODE` | QQ 邮箱 SMTP 授权码（四个任务共用） |
 
 脚本里所有敏感值都从环境变量读，**仓库代码里不含任何 cookie 或密码**。
 
 ### 外部定时器
 
-在 [cron-job.org](https://cron-job.org) 建三个任务，每个都是 `POST` 到：
+在 [cron-job.org](https://cron-job.org) 建任务，每个都是 `POST` 到：
 
 ```
 https://api.github.com/repos/Furina1027/quark-share-monitor/actions/workflows/<workflow>.yml/dispatches
@@ -145,7 +160,17 @@ https://api.github.com/repos/Furina1027/quark-share-monitor/actions/workflows/<w
 
 请求头带 `Authorization: Bearer <GitHub token>`（fine-grained token，只需 `Actions: Read and write` 这一项权限、只勾本仓库），请求体是 `{"ref":"main"}`。
 
+| 任务 | 触发时刻（北京时间） |
+|---|---|
+| 夸克 | 每小时第 7 分 |
+| B站 | 每小时第 23 分 |
+| 南航 | 每小时第 41 分 |
+| 教育部 | 每小时第 13 / 33 / 53 分（每 20 分钟一次，因为它的发布时点没法预测） |
+
 > 注意：cron-job.org 的免费版有「**连续失败 25 次自动停用任务**」的规则，所以 GitHub token 不要设太短的有效期，否则 token 一过期任务就会被自动停掉。
+>
+> 另外它的 REST API 有写入限流：**创建 job 每分钟最多 5 次**，超了返回 429（不是 500）。
+> `extendedData.headers` 是**字典**不是数组，写错了会 500。
 
 ---
 
@@ -160,17 +185,19 @@ https://api.github.com/repos/Furina1027/quark-share-monitor/actions/workflows/<w
 
 ## 本地运行
 
-三个脚本都能脱离 GitHub Actions 单独跑：
+四个脚本都能脱离 GitHub Actions 单独跑：
 
 ```bash
 python quark_share_monitor.py --once      # 夸克，扫一次
 python bili_block.py                      # B站，扫一次
 python nuaa_monitor.py --once             # 南航，检查一次
+python moe/教育部.py --once               # 教育部，检查一次
 ```
 
 夸克脚本还支持 `--reset`（重建基线）、`--test-email`（测邮件）、`--list-watch`（检查监控目录是否还在）、
 `--report-level source|detail`（报告粒度，默认 `source` = 只到老师/机构）。
 南航脚本支持 `--init`（重建基线）、`--test-parse`（离线解析本地 HTML）。
+教育部脚本支持 `--dry-run`（不发信）、`--test-mail`（测邮件）、`--state-dir`（指定产物目录）。
 
 ---
 
@@ -179,5 +206,7 @@ python nuaa_monitor.py --once             # 南航，检查一次
 - **cookie 会过期**。目前 cookie 失效时任务不会主动报警（拉黑/抓取失败后按"无变化"处理，静默跳过），需要自己留意。夸克脚本在鉴权失败时会发提醒邮件。
 - **B站的 `bili_block.py` 每轮都会同步一次线上黑名单**（约 1200 人、20 秒），保证不会对已拉黑的人重复发请求。
 - **南航的 `nuaa_monitor.py` 首次运行**（缓存为空）会自动用 `--init` 建基线，不会把历史公告当新公告轰炸。
+- **教育部的两个源里，源2（新闻通稿栏目）需要留意**：它当前能抓到 20 条、但一条都不含「硕士研究生」。
+  源1（官方文件列表）已确认在正常更新，即使源2失效也不影响主监控；两个源都连续 3 轮抓不到才会发告警邮件。
 - **公开仓库 60 天没有任何提交，GitHub 会自动禁用定时任务**。`monitor.yml` 里带了一个"月度保活"步骤，每 30 天自动提交一个 `.keepalive` 时间戳来避免这个问题。
   （即便真被禁用了也不影响 cron-job.org 那条路径 —— 它走的是 `workflow_dispatch`，不受这条规则约束。这也是外部调度的另一个好处。）
