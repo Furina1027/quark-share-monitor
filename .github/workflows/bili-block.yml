@@ -1,0 +1,79 @@
+# ============================================================
+# B站热门关键词拉黑 · GitHub Actions 版
+# ============================================================
+# 每小时扫一遍热门榜，标题/推荐理由/标签命中关键词就拉黑对应 UP 主。
+# 只有在「本次确实拉黑了人」时才发邮件，没拉黑就静默结束。
+#
+# 需要的 Secret（Settings → Secrets and variables → Actions）：
+#   BILI_COOKIE       B站完整 cookie（必须含 SESSDATA、bili_jct、DedeUserID）
+#   SMTP_AUTH_CODE    QQ 邮箱 SMTP 授权码
+#
+# 状态文件 blacklist.json 存在 GitHub 缓存里（不进仓库），每轮先恢复再存回。
+# 万一缓存丢了也没关系：脚本检测到本地黑名单为空会自动从线上拉取全部黑名单补齐，
+# 所以不会重复拉黑已经拉过的人。
+# ============================================================
+
+name: bili-popular-block
+
+on:
+  schedule:
+    # 每小时一次（UTC）。错开夸克那个任务的第 7 分钟，避开 GitHub 整点拥堵
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bili-popular-block
+  cancel-in-progress: false
+
+jobs:
+  block:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 拉取仓库
+        uses: actions/checkout@v4
+
+      - name: 恢复黑名单状态
+        uses: actions/cache/restore@v4
+        with:
+          path: bili-state
+          key: bili-state-${{ github.run_id }}
+          restore-keys: |
+            bili-state-
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install aiohttp requests
+
+      - name: 扫描热门榜并拉黑
+        env:
+          BILI_COOKIE: ${{ secrets.BILI_COOKIE }}
+          SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+          BILI_STATE_DIR: ${{ github.workspace }}/bili-state
+        run: |
+          mkdir -p bili-state
+          set -o pipefail
+          python bili_block.py 2>&1 | tee bili-state/bili.log
+
+      - name: 保存黑名单状态
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: bili-state
+          key: bili-state-${{ github.run_id }}
+
+      - name: 上传本次日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bili-log-${{ github.run_number }}
+          path: bili-state/*.log
+          retention-days: 7
