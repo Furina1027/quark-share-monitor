@@ -1,0 +1,84 @@
+# ============================================================
+# NUAA 机电学院「研究生招生」公告监测 · GitHub Actions 版
+# ============================================================
+# 目标页面: https://cmee.nuaa.edu.cn/11462/list.htm
+# 用文章 ID（c11462aNNNNNN）判断是否是新公告；有新公告才发邮件，没有就静默。
+#
+# 脚本是纯标准库实现，不需要 pip install。
+# 邮件账号走环境变量：SMTP_SENDER / SMTP_RECEIVER / SMTP_AUTH_CODE
+#   （SMTP_AUTH_CODE 复用仓库里已有的那个 Secret）
+#
+# 已知公告记录 seen_announcements.json 存在 GitHub 缓存里，跨轮保留。
+# 首次运行（缓存为空）自动用 --init 建基线，不会把历史公告当新公告轰炸你。
+# ============================================================
+
+name: nuaa-cmee-monitor
+
+on:
+  schedule:
+    # 每小时一次（UTC）。错开夸克(7分)和B站(23分)的任务
+    - cron: '41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nuaa-cmee-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 拉取仓库
+        uses: actions/checkout@v4
+
+      - name: 恢复已知公告记录
+        uses: actions/cache/restore@v4
+        with:
+          path: nuaa-state
+          key: nuaa-state-${{ github.run_id }}
+          restore-keys: |
+            nuaa-state-
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 检查公告
+        env:
+          SMTP_SENDER: 202046940@qq.com
+          SMTP_RECEIVER: 202046940@qq.com
+          SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+        run: |
+          set -e
+          mkdir -p nuaa-state
+          ARGS="--no-desktop --data-file nuaa-state/seen_announcements.json --log-file nuaa-state/nuaa.log --report-html nuaa-state/new_announcements.html"
+          if [ -f nuaa-state/seen_announcements.json ]; then
+            echo "== 已有基线记录，执行常规检查 =="
+            python nuaa_monitor.py --once $ARGS
+          else
+            echo "== 首次运行，建立基线（不发通知）=="
+            python nuaa_monitor.py --init $ARGS
+          fi
+
+      - name: 保存已知公告记录
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: nuaa-state
+          key: nuaa-state-${{ github.run_id }}
+
+      - name: 上传日志与报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuaa-log-${{ github.run_number }}
+          path: |
+            nuaa-state/*.log
+            nuaa-state/*.html
+          retention-days: 7
