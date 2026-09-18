@@ -359,14 +359,17 @@ async def main():
             print("❌ Cookie 中缺少 bili_jct，拉黑功能不可用")
             return
 
-        # 首次运行自动同步线上黑名单，之后仅在有 -s 参数时重新同步
-        if first_run:
-            print("🆕 检测到首次运行，自动抓取线上黑名单...")
-            blacklist = await sync_online_blacklist(api, blacklist)
-        elif args.sync:
+        # 云端的状态文件随时可能对不上（缓存被清、换了 runner、记录不全），
+        # 所以默认每轮都同步一次线上黑名单（1200 人约 20 秒），
+        # 避免对着早就拉黑过的人反复发无效请求、以及"黑名单共 N 人"少算。
+        # 想恢复成「只在首次运行或加 -s 时同步」，把环境变量 BILI_SYNC_EVERY_RUN 设为 0。
+        sync_every_run = os.environ.get('BILI_SYNC_EVERY_RUN', '1') == '1'
+        if first_run or args.sync or sync_every_run:
+            tag = "🆕 首次运行" if first_run else ("🔁 指定 -s" if args.sync else "🔄 常规同步")
+            print(f"{tag}，抓取线上黑名单...")
             blacklist = await sync_online_blacklist(api, blacklist)
         else:
-            print(f"📋 本地黑名单: {len(blacklist)} 个用户（加 -s 可强制重新同步）")
+            print(f"📋 本地黑名单: {len(blacklist)} 个用户")
 
         page = 1
         blocked_total = 0
