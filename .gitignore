@@ -1,0 +1,10 @@
+# 本地 cookie，绝对不能提交
+新建 文本文档.txt
+cookie*.txt
+*cookie*
+
+# 运行产物
+state/
+*.log
+quark_share_snapshot*
+__pycache__/

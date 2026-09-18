@@ -1,0 +1,85 @@
+# ============================================================
+# 夸克分享更新监控 · GitHub Actions 版
+# ============================================================
+# 放置位置：把它放到仓库的  .github/workflows/monitor.yml
+# 同时把 quark_share_monitor.py 也提交到仓库根目录。
+#
+# 用之前先在仓库加两个 Secret（Settings → Secrets and variables → Actions）：
+#   QUARK_COOKIE     浏览器里导出的夸克 cookie 整串（必填）
+#   SMTP_AUTH_CODE   QQ 邮箱 SMTP 授权码（可选，不加就走脚本里的默认值）
+#
+# ⚠ 重要：Runner 跑在 GitHub 的海外机房，夸克对海外 IP 可能有风控。
+#   第一次跑完务必点进日志确认能正常列出目录，再决定要不要长期用。
+#
+# 免费额度：公开仓库不限量；私有仓库 2000 分钟/月。
+#   本任务每次约 3 分钟，每小时一次 ≈ 2160 分钟/月，私有仓会超，建议用公开仓库
+#   （cookie 放 Secrets，不会泄露；但资料目录结构会随快照写进仓库，介意就换国内云函数）。
+# ============================================================
+
+name: quark-share-monitor
+
+on:
+  schedule:
+    # 每小时一次（cron 用 UTC 时间）。刻意错开整点：GitHub 在整点前后最拥堵，
+    # 官方也承认定时任务可能延迟 15~60 分钟，所以别指望准点。
+    - cron: '7 * * * *'
+  # 网页上手动点一下就能跑，方便调试
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quark-share-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 拉取仓库
+        uses: actions/checkout@v4
+
+      - name: 恢复上次的快照
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: quark-snapshot-${{ github.run_id }}
+          restore-keys: |
+            quark-snapshot-
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 扫描并对比
+        env:
+          QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
+          SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+          QUARK_MONITOR_DIR: ${{ github.workspace }}/state
+        run: |
+          mkdir -p state
+          ls -la state || true
+          python quark_share_monitor.py --once
+
+      - name: 保存快照
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: quark-snapshot-${{ github.run_id }}
+
+      - name: 上传本次日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-log-${{ github.run_number }}
+          path: |
+            state/*.log
+          retention-days: 7
