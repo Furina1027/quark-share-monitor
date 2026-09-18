@@ -350,7 +350,9 @@ async def main():
         return
 
     blacklist = load_blacklist()
-    first_run = not os.path.exists(BLACKLIST_FILE)
+    # 云端首轮状态文件是空的（或缓存被清了），这种情况同样要同步一次线上黑名单，
+    # 否则会对着早就拉黑过的用户反复发无效请求、而且"黑名单共 N 人"会少算
+    first_run = not blacklist
 
     async with BiliAPI(COOKIE) as api:
         if not api.csrf:
