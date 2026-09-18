@@ -120,7 +120,7 @@ PDF 区那种没有年份编号的（`03.27政治PDF / 27徐涛PDF`），退回�
 │   ├── monitor.yml          # 夸克：每小时第 7 分
 │   ├── bili-block.yml       # B站：每小时第 23 分
 │   ├── nuaa-monitor.yml     # 南航：每小时第 41 分
-│   └── moe-monitor.yml      # 教育部：每小时第 13 分（外部定时器实际按每 20 分钟打）
+│   └── moe-monitor.yml      # 教育部：每小时第 13 分
 ├── quark_share_monitor.py   # 夸克分享更新监控
 ├── bili_block.py            # B站热门关键词拉黑
 ├── nuaa_monitor.py          # 南航机电学院公告监测
@@ -163,9 +163,9 @@ https://api.github.com/repos/Furina1027/quark-share-monitor/actions/workflows/<w
 | 任务 | 触发时刻（北京时间） |
 |---|---|
 | 夸克 | 每小时第 7 分 |
+| 教育部 | 每小时第 13 分 |
 | B站 | 每小时第 23 分 |
 | 南航 | 每小时第 41 分 |
-| 教育部 | 每小时第 13 / 33 / 53 分（每 20 分钟一次，因为它的发布时点没法预测） |
 
 > 注意：cron-job.org 的免费版有「**连续失败 25 次自动停用任务**」的规则，所以 GitHub token 不要设太短的有效期，否则 token 一过期任务就会被自动停掉。
 >
