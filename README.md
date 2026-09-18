@@ -1,0 +1,154 @@
+# 自动监控任务合集
+
+一个用 **GitHub Actions** 跑定时任务的仓库。里面是三个互不相干的监控脚本，各自独立调度、独立通知。
+
+> 仓库名还叫 `quark-share-monitor`（最初只为夸克那个任务建的），现在装了三件事，名字已经不太准确了。
+
+---
+
+## 三个任务
+
+| 任务 | 脚本 | 干什么 | 什么时候发邮件 |
+|---|---|---|---|
+| **夸克考研资料更新** | `quark_share_monitor.py` | 遍历指定分享目录树，对比快照找出新增 / 删除 / 改名 / 内容变化 | 有变化才发 |
+| **B站热门拉黑** | `bili_block.py` | 扫热门榜，标题 / 推荐理由 / 标签命中关键词就拉黑对应 UP 主 | 本次真拉黑了人才发 |
+| **南航研究生公告** | `nuaa_monitor.py` | 盯机电学院「研究生招生」栏目，按文章 ID 判断新公告 | 有新公告才发 |
+
+三个任务都遵守同一条原则：**没变化就完全静默，不打扰。**
+
+---
+
+## 整体流程
+
+```mermaid
+flowchart TD
+    A["cron-job.org<br/>外部定时器"] -->|"每小时 POST dispatches 接口"| B["GitHub API<br/>实时事件通道"]
+    B --> C["GitHub Actions<br/>启动 runner"]
+    C --> D["从缓存恢复状态<br/>快照 / 黑名单 / 已知公告"]
+    D --> E["跑脚本：抓取 + 与旧状态对比"]
+    E --> F{"有新内容吗"}
+    F -->|"有"| G["发 QQ 邮件通知"]
+    F -->|"没有"| H["静默结束"]
+    G --> I["把新状态写回缓存"]
+    H --> I
+    I --> J["上传本次日志（保留 7 天）"]
+```
+
+### 为什么不用 GitHub 自带的 `schedule`
+
+GitHub Actions 自带 cron 触发，但这个仓库的实测结果是：**配置完全正确、workflow 状态 active、平台无故障，四个时间点却一个都没触发**。
+
+原因有两个，而且都是 GitHub 平台侧的行为：
+
+1. 新加入的 schedule workflow，GitHub 需要先"注册"，首次生效可能延迟数小时
+2. GitHub 的 cron 调度器在高负载时会**直接丢弃**排队超时的任务（官方文档原话），而不是延后执行
+
+所以改用外部定时器 `cron-job.org` 去调 GitHub 的 `workflow_dispatch` 接口 —— 这条路径走**实时事件通道**，秒级创建运行，绕开了那个不稳定的 cron 调度器。
+
+三个 workflow 文件里的 `schedule` 触发**仍然保留**，作为兜底。重复触发不会造成重复邮件：脚本都是"有新内容才发"，而且状态持久化在缓存里，第二次跑会正确判定"无变化"。
+
+---
+
+## 状态是怎么跨轮保留的
+
+GitHub Actions 每次跑都是一台**全新的机器**，跑完即销毁。所以"上一轮长什么样"必须存在外面：
+
+```yaml
+- uses: actions/cache/restore@v4   # 开跑前：把上一轮的状态取回来
+  with:
+    path: <状态目录>
+    restore-keys: <前缀>-            # 前缀匹配 → 拿到最近一份
+# ... 跑脚本、对比、生成新状态 ...
+- uses: actions/cache/save@v4      # 跑完后：把新状态存回去
+```
+
+各任务的状态文件：
+
+| 任务 | 状态文件 | 作用 |
+|---|---|---|
+| 夸克 | `quark_share_snapshot.json.gz` | 上次扫描的完整目录树快照 |
+| B站 | `blacklist.json` | 已拉黑用户记录 |
+| 南航 | `seen_announcements.json` | 已见过的公告文章 ID |
+
+即使缓存被清空也不会误报：夸克会重建基线并提示"下次开始报告更新"，B站会自动从线上同步全部黑名单，南航会重新建立基线。
+
+---
+
+## 目录结构
+
+```
+.
+├── .github/workflows/
+│   ├── monitor.yml          # 夸克：每小时第 7 分
+│   ├── bili-block.yml       # B站：每小时第 23 分
+│   └── nuaa-monitor.yml     # 南航：每小时第 41 分
+├── quark_share_monitor.py   # 夸克分享更新监控
+├── bili_block.py            # B站热门关键词拉黑
+├── nuaa_monitor.py          # 南航机电学院公告监测
+├── requirements.txt
+└── .gitignore
+```
+
+三个任务错开分钟运行，避免同时打 GitHub API 和邮件服务器。
+
+---
+
+## 配置
+
+### Secrets
+
+在 `Settings → Secrets and variables → Actions` 里配置：
+
+| Secret | 用途 |
+|---|---|
+| `QUARK_COOKIE` | 夸克网盘 cookie（导出格式：`a=1; b=2`） |
+| `BILI_COOKIE` | B站完整 cookie，必须含 `SESSDATA`、`bili_jct`、`DedeUserID` |
+| `SMTP_AUTH_CODE` | QQ 邮箱 SMTP 授权码（三个任务共用） |
+
+脚本里所有敏感值都从环境变量读，**仓库代码里不含任何 cookie 或密码**。
+
+### 外部定时器
+
+在 [cron-job.org](https://cron-job.org) 建三个任务，每个都是 `POST` 到：
+
+```
+https://api.github.com/repos/Furina1027/quark-share-monitor/actions/workflows/<workflow>.yml/dispatches
+```
+
+请求头带 `Authorization: Bearer <GitHub token>`（fine-grained token，只需 `Actions: Read and write` 这一项权限、只勾本仓库），请求体是 `{"ref":"main"}`。
+
+> 注意：cron-job.org 的免费版有「**连续失败 25 次自动停用任务**」的规则，所以 GitHub token 不要设太短的有效期，否则 token 一过期任务就会被自动停掉。
+
+---
+
+## 加一个新监控任务
+
+1. 把脚本放进仓库根目录，所有敏感值改成读环境变量，状态文件路径也是
+2. 在 `.github/workflows/` 加一个 yml，照着现有的改：换 `cron` 分钟、换缓存 key 前缀、换状态目录
+3. 配好对应的 Secret
+4. 在 cron-job.org 加一条任务，指向新的 workflow
+
+---
+
+## 本地运行
+
+三个脚本都能脱离 GitHub Actions 单独跑：
+
+```bash
+python quark_share_monitor.py --once      # 夸克，扫一次
+python bili_block.py                      # B站，扫一次
+python nuaa_monitor.py --once             # 南航，检查一次
+```
+
+夸克脚本还支持 `--reset`（重建基线）、`--test-email`（测邮件）、`--list-watch`（检查监控目录是否还在）。
+南航脚本支持 `--init`（重建基线）、`--test-parse`（离线解析本地 HTML）。
+
+---
+
+## 已知注意事项
+
+- **cookie 会过期**。目前 cookie 失效时任务不会主动报警（拉黑/抓取失败后按"无变化"处理，静默跳过），需要自己留意。夸克脚本在鉴权失败时会发提醒邮件。
+- **B站的 `bili_block.py` 每轮都会同步一次线上黑名单**（约 1200 人、20 秒），保证不会对已拉黑的人重复发请求。
+- **南航的 `nuaa_monitor.py` 首次运行**（缓存为空）会自动用 `--init` 建基线，不会把历史公告当新公告轰炸。
+- **公开仓库 60 天没有任何提交，GitHub 会自动禁用定时任务**。`monitor.yml` 里带了一个"月度保活"步骤，每 30 天自动提交一个 `.keepalive` 时间戳来避免这个问题。
+  （即便真被禁用了也不影响 cron-job.org 那条路径 —— 它走的是 `workflow_dispatch`，不受这条规则约束。这也是外部调度的另一个好处。）
