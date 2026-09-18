@@ -61,6 +61,7 @@ import smtplib
 import sys
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from email.header import Header
@@ -97,6 +98,13 @@ CONFIG = {
     'request_timeout': 30,          # 请求超时（秒）
     'request_interval': 0.02,       # 单请求最小间隔（秒）
     'max_report_items': 200,        # 报告最多列多少条（完整记录仍写 updates 日志）
+
+    # 邮件报告的粒度：
+    #   'source' = 只到「老师 / 机构」层级（18.2027大牙、06.2027高途【唐静】…），不列具体文件
+    #   'detail' = 旧行为，逐条列到文件
+    # 明细不论选哪个都会写进 quark_share_updates.log，邮件只是摘要。
+    'report_level': 'source',
+    'max_report_groups': 60,        # source 粒度下最多列多少个老师/机构
 
     'cookie_file': '',              # 留空 = 自动在脚本目录里找
 
@@ -519,7 +527,127 @@ def collapse_added(added):
     return out
 
 
-def format_diff_report(added, removed, renamed, modified, incomplete=False):
+# 「编号目录」形如 18.2027大牙 / 08.2027新东方【王江涛 易熙人】 / 13.2027 机械 / 25.2027八哥
+# 注意学科那一级也长这样（01.2027 Svip政治），所以取的是路径里最深的一个。
+# 课程级目录（06.命题规律解析、17.【冲刺阶段-二轮刷题】、08.27考研…）都不带 4 位年份，不会被误判。
+_UNIT_RE = re.compile(r'^\d{1,3}\s*[.．、]\s*20\d{2}')
+
+
+def _disp_width(s):
+    """中文按 2 列算，用来对齐报告里的文字"""
+    return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in s)
+
+
+def _pad(s, width):
+    return s + ' ' * max(0, width - _disp_width(s))
+
+
+def source_of(path, is_dir):
+    """把一个路径归到「老师 / 机构」这一层。
+
+    分享树是「学科 / 编号.老师或机构 / 课程 / 文件」，学科和老师都带编号前缀，
+    所以取路径里**最深**的那个「编号.20XX」目录（18.2027大牙、06.2027高途【唐静】…）。
+    一个都没有时（如 PDF 区的 27徐涛PDF），目录取自身、文件取它的上一级目录。
+    """
+    parts = [p for p in (path or '').split('/') if p]
+    if not parts:
+        return '/'
+    dirs = parts if is_dir else parts[:-1]
+    if not dirs:
+        return '/'
+    for i in range(len(dirs) - 1, -1, -1):
+        if _UNIT_RE.match(dirs[i]):
+            return '/' + '/'.join(dirs[:i + 1])
+    return '/' + '/'.join(dirs)
+
+
+def source_label(key, keep=2):
+    """老师/机构层级显示成「学科 / 老师」；层数太多只留最后 keep 段"""
+    segs = [s for s in short_path(key).split('/') if s]
+    dedup = [s for i, s in enumerate(segs) if i == 0 or s != segs[i - 1]]   # 去掉重复的相邻层
+    if not dedup:
+        return short_path(key)
+    return ' / '.join(dedup[-keep:])
+
+
+def group_by_source(added, removed, renamed, modified):
+    """把四类变化按老师/机构层级归并，供摘要报告使用。
+
+    返回按变化总数从多到少排序的列表，每项含各类型的条数、最新时间、新增目录数。
+    """
+    groups = {}
+
+    def put(key, kind, ts=0, is_dir=False):
+        g = groups.setdefault(key, {'key': key, 'added': 0, 'removed': 0,
+                                    'renamed': 0, 'modified': 0,
+                                    'total': 0, 'newest': 0, 'dirs': 0})
+        g[kind] += 1
+        g['total'] += 1
+        if ts and ts > g['newest']:
+            g['newest'] = ts
+        if is_dir:
+            g['dirs'] += 1
+
+    for v in added:
+        put(source_of(v['p'], v['d']), 'added', v.get('t'), v['d'])
+    for v in removed:
+        put(source_of(v['p'], v['d']), 'removed', v.get('t'), v['d'])
+    for _, nv in renamed:
+        put(source_of(nv['p'], nv['d']), 'renamed', nv.get('t'), nv['d'])
+    for _, nv in modified:
+        put(source_of(nv['p'], nv['d']), 'modified', nv.get('t'), nv['d'])
+
+    out = list(groups.values())
+    for g in out:
+        g['label'] = source_label(g['key'])
+    out.sort(key=lambda g: (-g['total'], g['key']))
+    return out
+
+
+def format_source_report(added, removed, renamed, modified, incomplete=False):
+    """摘要报告：只到老师 / 机构层级，不列具体文件（邮件用）"""
+    n = CONFIG.get('max_report_groups', 60)
+    groups = group_by_source(added, removed, renamed, modified)
+    if not groups:
+        return "本次无变化。"
+
+    total = len(added) + len(removed) + len(renamed) + len(modified)
+    lines = [f"涉及 {len(groups)} 个老师 / 机构，共 {total} 项变化", '']
+
+    for title, kind, show_dirs in (('新增', 'added', True),
+                                   ('内容变化', 'modified', False),
+                                   ('改名 / 移动', 'renamed', False),
+                                   ('删除', 'removed', False)):
+        rows = [g for g in groups if g[kind]]
+        if not rows:
+            continue
+        rows.sort(key=lambda g: (-g[kind], g['key']))
+        lines.append(f"【{title}】{sum(g[kind] for g in rows)} 项，"
+                     f"{len(rows)} 个老师 / 机构")
+        head = rows[:n]
+        width = min(max((_disp_width(g['label']) for g in head), default=0), 44)
+        for g in head:
+            tail = f"{g[kind]} 项"
+            if show_dirs and g['dirs']:
+                tail += f"（含 {g['dirs']} 个新目录）"
+            if g['newest']:
+                tail += f"　最新 {ts2str(g['newest'])[5:16]}"
+            lines.append(f"  · {_pad(g['label'], width)}  {tail}")
+        if len(rows) > n:
+            lines.append(f"  · … 另有 {len(rows) - n} 个来源未列出")
+        lines.append('')
+
+    lines.append("（要看具体是哪些文件，见 quark_share_updates.log 的明细段）")
+    if incomplete:
+        lines.append("⚠ 本次有目录读取失败，结果可能不完整，「删除」项已忽略。")
+    return '\n'.join(lines).rstrip()
+
+
+def format_diff_report(added, removed, renamed, modified, incomplete=False, level=None):
+    level = level or CONFIG.get('report_level', 'detail')
+    if level == 'source':
+        return format_source_report(added, removed, renamed, modified, incomplete)
+
     n = CONFIG['max_report_items']
     tops = collapse_added(added)
     lines = [f"新增 {len(tops)} 个顶层项（含子孙共 {len(added)} 项）"]
@@ -618,24 +746,30 @@ def check_once():
     total = len(added) + len(removed) + len(renamed) + len(modified)
     now = datetime.now()
 
-    report = (f"【夸克考研资料更新】{now:%Y-%m-%d %H:%M}\n"
-              f"分享：2027考研资料（持续更新）\n"
-              f"范围：专业课(机械×2) + 公共课(政治/英语/数学)\n"
-              f"当前 {n_dirs} 个目录 / {n_files} 个文件\n"
-              f"{'-' * 50}\n"
-              + format_diff_report(added, removed, renamed, modified,
-                                   incomplete=ignore_deleted))
+    head = (f"【夸克考研资料更新】{now:%Y-%m-%d %H:%M}\n"
+            f"分享：2027考研资料（持续更新）\n"
+            f"范围：专业课(机械×2) + 公共课(政治/英语/数学)\n"
+            f"当前 {n_dirs} 个目录 / {n_files} 个文件\n"
+            f"{'-' * 50}\n")
+    report = head + format_diff_report(added, removed, renamed, modified,
+                                       incomplete=ignore_deleted, level='source')
 
     if total:
+        n_src = len(group_by_source(added, removed, renamed, modified))
         log(f"检测到更新：新增 {len(added)} / 删除 {len(removed)} / "
-            f"移动 {len(renamed)} / 修改 {len(modified)}")
+            f"移动 {len(renamed)} / 修改 {len(modified)}，涉及 {n_src} 个老师/机构")
         print("\n" + report + "\n")
+        # 本地日志留全量明细（邮件只看得到摘要，出了事好回查）
         try:
             with open(UPDATES_FILE, 'a', encoding='utf-8') as f:
-                f.write("\n" + "=" * 70 + "\n" + report + "\n")
+                f.write("\n" + "=" * 70 + "\n" + report + "\n"
+                        + "-" * 70 + "\n【明细】\n"
+                        + format_diff_report(added, removed, renamed, modified,
+                                             incomplete=ignore_deleted, level='detail')
+                        + "\n")
         except Exception:
             pass
-        send_email(f"夸克考研资料更新（新增 {len(added)} 项）", report)
+        send_email(f"夸克考研资料更新（{n_src} 个老师/机构有更新）", report)
     else:
         log("无更新")
         print("  无更新\n")
@@ -658,6 +792,8 @@ def main():
     ap.add_argument('--no-email', action='store_true', help='本次不发邮件（手动调试用）')
     ap.add_argument('--test-email', action='store_true', help='发一封测试邮件')
     ap.add_argument('--list-watch', action='store_true', help='只检查监控目录能否解析到')
+    ap.add_argument('--report-level', choices=('source', 'detail'),
+                    help='报告粒度：source=只到老师/机构层级（默认），detail=逐条列文件')
     args = ap.parse_args()
 
     # 无控制台环境（pythonw / 计划任务静默运行）下把 stdout/stderr 接到日志文件
@@ -678,6 +814,8 @@ def main():
         CONFIG['workers'] = args.workers
     if args.only:
         CONFIG['watch_paths'] = [p.strip() for p in args.only.split(',') if p.strip()]
+    if args.report_level:
+        CONFIG['report_level'] = args.report_level
     if args.no_email:
         CONFIG['notify_email']['enabled'] = False
 
