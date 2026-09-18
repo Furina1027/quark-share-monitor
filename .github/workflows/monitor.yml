@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write    # 保活步骤要往仓库写一个时间戳文件
 
 concurrency:
   group: quark-share-monitor
@@ -41,6 +41,8 @@ jobs:
     steps:
       - name: 拉取仓库
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # 保活步骤要查 .keepalive 的提交历史，默认只拉 1 个 commit 不够
 
       - name: 恢复上次的快照
         uses: actions/cache/restore@v4
@@ -83,3 +85,23 @@ jobs:
           path: |
             state/*.log
           retention-days: 7
+
+      # 公开仓库 60 天没有任何提交，GitHub 会自动禁用定时任务。
+      # 这里每 30 天往 .keepalive 写一次时间戳并提交，防止监控被静默停掉。
+      - name: 月度保活
+        if: always()
+        continue-on-error: true
+        run: |
+          LAST=$(git log -1 --format=%ct -- .keepalive 2>/dev/null || echo 0)
+          NOW=$(date +%s)
+          if [ $((NOW - LAST)) -gt 2592000 ]; then
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > .keepalive
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .keepalive
+            git commit -m "chore: keepalive (防止 60 天无活动导致定时任务被禁用)"
+            git push
+            echo "已提交保活标记"
+          else
+            echo "距上次保活不足 30 天，跳过"
+          fi
