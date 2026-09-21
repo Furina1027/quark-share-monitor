@@ -1,15 +1,24 @@
 # ============================================================
-# NUAA 机电学院「研究生招生」公告监测 · GitHub Actions 版
+# 南航招生公告监测 · GitHub Actions 版
 # ============================================================
-# 目标页面: https://cmee.nuaa.edu.cn/11462/list.htm
-# 用文章 ID（c11462aNNNNNN）判断是否是新公告；有新公告才发邮件，没有就静默。
+# 监控源（一次运行、合并成一封邮件）:
+#   1. 机电学院「研究生招生」 https://cmee.nuaa.edu.cn/11462/list.htm
+#   2. 研究生院「硕士招生」   https://www.graduate.nuaa.edu.cn/sszs/list.htm
+#
+# 用文章 ID（如 c11462a409933 / c13487a410574）判断是否是新公告；
+# 与条目位置、是否「置顶」无关。有新公告才发邮件，没有就静默。
 #
 # 脚本是纯标准库实现，不需要 pip install。
 # 邮件账号走环境变量：SMTP_SENDER / SMTP_RECEIVER / SMTP_AUTH_CODE
 #   （SMTP_AUTH_CODE 复用仓库里已有的那个 Secret）
 #
-# 已知公告记录 seen_announcements.json 存在 GitHub 缓存里，跨轮保留。
-# 首次运行（缓存为空）自动用 --init 建基线，不会把历史公告当新公告轰炸你。
+# 已知公告记录 seen_announcements.json 存在 GitHub 缓存里，跨轮保留；
+# 每个源的基线各自维护 —— 新增监测源时该源会自动「静默建基线」，
+# 不会把它已有的历史公告当成新公告发出来。
+# 首次运行（缓存为空）自动用 --init 建基线。
+#
+# 注意：workflow 名与文件名保持 nuaa-cmee-monitor / nuaa-monitor.yml 不变，
+#       因为 cron-job.org 的定时触发器指向这个文件。
 # ============================================================
 
 name: nuaa-cmee-monitor
