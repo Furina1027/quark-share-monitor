@@ -142,23 +142,18 @@ PDF 区那种没有年份编号的（`03.27政治PDF / 27徐涛PDF`），退回�
 .
 ├── .github/workflows/
 │   ├── monitor.yml          # 夸克：每小时第 7 分
-│   ├── moe-monitor.yml      # 教育部：每小时第 13 分
 │   ├── bili-block.yml       # B站：每小时第 23 分
 │   └── nuaa-monitor.yml     # 南航：每小时第 41 分
 ├── quark_share_monitor.py   # 夸克分享更新监控
 ├── bili_block.py            # B站热门关键词拉黑
 ├── nuaa_monitor.py          # 南航招生公告监测（机电学院 + 研究生院 双源）
-├── moe/                     # 教育部招生规定发布监控（完整包）
-│   ├── 教育部.py            # 入口：--once / --dry-run / --test-mail / --state-dir
-│   ├── config.py            # 年份、关键词、数据源、邮箱、间隔
-│   └── moe_monitor/         # core / sources / monitor / notify / state
 ├── docs/                    # 运维文档
 │   └── cron-job.org-运维手册.md   # 外部定时器的完整操作手册（维护前必读）
 ├── requirements.txt
 └── .gitignore
 ```
 
-四个任务错开分钟运行，避免同时打 GitHub API 和邮件服务器。
+三个任务错开分钟运行，避免同时打 GitHub API 和邮件服务器。
 
 ---
 
@@ -198,7 +193,7 @@ https://api.github.com/repos/Furina1027/quark-share-monitor/actions/workflows/<w
 > `extendedData.headers` 是**字典**不是数组，写错了会 500。
 
 📖 **维护这个外部定时器请先读 [`docs/cron-job.org-运维手册.md`](docs/cron-job.org-运维手册.md)**
-—— 里面写了 API Key 放哪、四个 jobId、改触发时间 / 轮换 token / 新建 job 的完整代码、
+—— 里面写了 API Key 放哪、三个 jobId、改触发时间 / 轮换 token / 新建 job 的完整代码、
 故障排查表（任务被自动停用、401/403/429/500 分别怎么处理）和"改完必做的验证清单"。
 
 ---

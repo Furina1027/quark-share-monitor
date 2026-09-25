@@ -8,8 +8,8 @@
 
 ## 0. 它在这个项目里的角色（30 秒背景）
 
-这个仓库的四个监控任务跑在 **GitHub Actions** 上，但**不用 GitHub 自带的 `schedule`** ——
-早期实测它在本人账号/仓库下**完全不触发**（四个时间点一个都没来，平台会把排队超时的任务直接丢弃）。
+这个仓库的三个监控任务跑在 **GitHub Actions** 上，但**不用 GitHub 自带的 `schedule`** ——
+早期实测它在本人账号/仓库下**完全不触发**（当时配的四个时间点一个都没来，平台会把排队超时的任务直接丢弃）。
 
 所以改用 **cron-job.org 当外部定时器**：每小时按点向 GitHub 的 `workflow_dispatch` 接口发一次 POST，
 走实时事件通道，**秒级创建运行**（实测误差 2 秒内）。
@@ -23,18 +23,17 @@ cron-job.org ──每小时 POST dispatches──▶ GitHub API ──▶ 创�
 
 ---
 
-## 1. 本账户现状：四个 job
+## 1. 本账户现状：三个 job
 
 全部时区 `Asia/Shanghai`，方法 `POST`，body `{"ref":"main"}`。
 
 | jobId | 名称 | 触发分钟 | 目标 workflow | 目标仓库 |
 |---|---|---|---|---|
 | `8467348` | 夸克考研资料更新监控 | 每小时第 **07** 分 | `monitor.yml` | `Furina1027/quark-share-monitor` |
-| `8467829` | 教育部 2027 招生规定监控 | 每小时第 **13** 分 | `moe-monitor.yml` | 同上 |
 | `8467349` | B站热门关键词拉黑 | 每小时第 **23** 分 | `bili-block.yml` | 同上 |
 | `8467350` | 南航招生公告监控（机电 + 研究生院） | 每小时第 **41** 分 | `nuaa-monitor.yml` | 同上 |
 
-四个 job 的 URL 长得一样，只有 workflow 文件名不同：
+三个 job 的 URL 长得一样，只有 workflow 文件名不同：
 
 ```
 https://api.github.com/repos/Furina1027/quark-share-monitor/actions/workflows/<workflow>.yml/dispatches
@@ -43,8 +42,18 @@ https://api.github.com/repos/Furina1027/quark-share-monitor/actions/workflows/<w
 请求头：`Authorization: Bearer <GitHub token>` + `Content-Type: application/json`
 （token 是 fine-grained PAT，只需 `Actions: Read and write`、只授权这一个仓库，**有效期设为不过期**）
 
-> **⚠️ 不要改 workflow 的文件名**（`monitor.yml` / `bili-block.yml` / `nuaa-monitor.yml` / `moe-monitor.yml`）——
-> job 的 URL 是写死的，改名等于四个定时器全部失效。workflow 里的 `name:` 字段随便改（不影响触发）。
+> **📌 已移除的任务（2026-09-25）**：教育部 2027 招生规定监控（workflow `moe-monitor.yml`，jobId **`8467829`**、
+> 原本每小时第 13 分）已从仓库整体删除，对应的 `moe/` 代码目录也一并移除了。
+>
+> **如果 cron-job.org 上这条 job 还在，应该一并删掉** —— 它指向的 workflow 文件已不存在，
+> GitHub 会返回 404；虽然连续失败 25 次后会被自动停用（无害），但留着会白耗 API 配额：
+> ```python
+> s.delete(f"{ENDPOINT}/jobs/8467829", headers=H, timeout=30)
+> ```
+> 也可能它已经连同任务一起被删了 —— 先用 §4.1 列一遍确认再动手。
+
+> **⚠️ 不要改 workflow 的文件名**（`monitor.yml` / `bili-block.yml` / `nuaa-monitor.yml`）——
+> job 的 URL 是写死的，改名等于三个定时器全部失效。workflow 里的 `name:` 字段随便改（不影响触发）。
 
 ---
 
@@ -60,12 +69,12 @@ https://api.github.com/repos/Furina1027/quark-share-monitor/actions/workflows/<w
 
 > key 等同密码，可通过控制台限制来源 IP；**不要写进仓库、不要提交、不要贴进聊天记录长期留存**。
 
-### GitHub token（四个 job 请求头里用的那个）
+### GitHub token（三个 job 请求头里用的那个）
 
 - fine-grained PAT，**只勾 `Furina1027/quark-share-monitor` 这一个仓库**，权限只有 `Actions: Read and write`
 - 生成入口：GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
-- **有效期务必设"不过期"**：免费版 cron-job.org 连续失败 25 次就会自动停用任务，token 一过期四个任务会陆续被停掉
-- 轮换 token 后，要**逐个 PATCH 更新四个 job 的 `extendedData.headers`**（见 §4.6）
+- **有效期务必设"不过期"**：免费版 cron-job.org 连续失败 25 次就会自动停用任务，token 一过期三个任务会陆续被停掉
+- 轮换 token 后，要**逐个 PATCH 更新三个 job 的 `extendedData.headers`**（见 §4.6）
 
 ---
 
@@ -170,7 +179,7 @@ print(r.status_code, r.text)
 ```
 
 > PATCH 是**增量**语义，但 `schedule` 是整个对象替换 —— 五个字段要给全。
-> 改完记得核对：四个任务的分钟**不要撞车**（现在是 7 / 13 / 23 / 41），也别挤在整点（GitHub 整点最拥堵）。
+> 改完记得核对：三个任务的分钟**不要撞车**（现在是 7 / 23 / 41），也别挤在整点（GitHub 整点最拥堵）。
 
 ### 4.5 暂停 / 启用
 
@@ -181,11 +190,11 @@ s.patch(f"{ENDPOINT}/jobs/8467350", headers=H, timeout=30,
 
 > 排查问题想临时停掉某个任务时用这个，**不要 DELETE** —— 删掉就得重建。
 
-### 4.6 轮换 GitHub token（四 个 job 都要改）
+### 4.6 轮换 GitHub token（三个 job 都要改）
 
 ```python
 NEW_TOKEN = "github_pat_xxx"
-for jid in (8467348, 8467829, 8467349, 8467350):
+for jid in (8467348, 8467349, 8467350):
     r = s.patch(f"{ENDPOINT}/jobs/{jid}", headers=H, timeout=30,
                 data=json.dumps({"job": {"extendedData": {
                     "headers": {"Authorization": f"Bearer {NEW_TOKEN}",
@@ -261,7 +270,7 @@ s.delete(f"{ENDPOINT}/jobs/8467350", headers=H, timeout=30)
 
 | 症状 | 原因 | 处置 |
 |---|---|---|
-| GitHub 完全没建 run，job 历史里 httpStatus 是 401 | GitHub token 失效/被撤销 | 生成新 token → §4.6 更新四个 job → §5 验证 |
+| GitHub 完全没建 run，job 历史里 httpStatus 是 401 | GitHub token 失效/被撤销 | 生成新 token → §4.6 更新三个 job → §5 验证 |
 | httpStatus 是 403 | 控制台配了 IP 白名单，或 token 权限不够 | 检查 token 是否只勾了这一个仓库 + `Actions: Read and write` |
 | job 的 `enabled` 变成 `false`，自己停了 | **连续失败 25 次自动停用**（token 过期常见） | 修好 token 后 §4.5 重新 `enabled: True` |
 | 历史里 `status=4`（HTTP 错误）/ `5`（超时） | dispatches 接口返回非 2xx，或网络超时 | 先手动 curl 复现（§5.1），再查 token / 仓库名 |
@@ -277,7 +286,7 @@ s.delete(f"{ENDPOINT}/jobs/8467350", headers=H, timeout=30)
 1. **不要改 workflow 文件名** —— 打卡位都是按文件名写死的 URL
 2. **不要 DELETE 现有 job** 再重建 —— 想停就 `enabled: false`，删了容易漏掉某个字段导致行为不一致
 3. **不要把 API Key 提交进仓库** —— 放 `.cron-job-api-key`（已 gitignore）或跟用户要
-4. **不要把分钟改到整点附近**（GitHub 整点最拥堵），也别让四个任务撞在同一分钟
+4. **不要把分钟改到整点附近**（GitHub 整点最拥堵），也别让三个任务撞在同一分钟
 5. **不要写轮询脚本刷 API** —— 每天只有 100 次配额
 6. **不要在触发时间上"加保险"多建几条 job** —— 重复触发虽然不会导致重复邮件，但会白耗 Actions 时间和 API 配额
 
@@ -300,7 +309,7 @@ s.delete(f"{ENDPOINT}/jobs/8467350", headers=H, timeout=30)
 ### requestMethod
 
 `0`=GET `1`=POST `2`=OPTIONS `3`=HEAD `4`=PUT `5`=DELETE `6`=TRACE `7`=CONNECT `8`=PATCH
-（本项目四个 job 都是 `1`）
+（本项目三个 job 都是 `1`）
 
 ### JobStatus（`lastStatus` / 历史里的 `status`）
 
