@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import json
 import os
+import sys
 import time
 from datetime import datetime
 from functools import reduce
@@ -89,6 +90,8 @@ def sign_popular_params(pn: int, ps: int, sessdata: str = "") -> dict:
 # 云端（GitHub Actions）用：状态目录、邮件账号全部走环境变量
 STATE_DIR = os.environ.get('BILI_STATE_DIR') or os.path.dirname(os.path.abspath(__file__))
 BLACKLIST_FILE = os.path.join(STATE_DIR, 'blacklist.json')
+COOKIE_ALERT_FILE = os.path.join(STATE_DIR, 'cookie_alert.json')
+COOKIE_ALERT_COOLDOWN = 24 * 60 * 60
 
 SMTP_SENDER = os.environ.get('SMTP_SENDER', '202046940@qq.com')
 SMTP_RECEIVER = os.environ.get('SMTP_RECEIVER', '202046940@qq.com')
@@ -106,6 +109,20 @@ WHITELIST_MIDS = {23084818}
 
 # 请填入你的完整 Cookie (需包含 SESSDATA, bili_jct, DedeUserID)
 COOKIE = os.environ.get('BILI_COOKIE', '').strip()
+
+
+class CookieInvalidError(Exception):
+    pass
+
+
+def is_cookie_invalid(data):
+    code = str(data.get('code', ''))
+    message = str(data.get('message') or '')
+    return code == '-101' or '未登录' in message or '请先登录' in message
+
+
+def cookie_error_text(data):
+    return f"code={data.get('code')}, message={data.get('message') or ''}"
 
 
 # ==================== 本地黑名单存取 ====================
@@ -167,6 +184,88 @@ def send_block_email(records: list, total_page: int):
         return False
 
 
+def load_cookie_alert_state():
+    if not os.path.exists(COOKIE_ALERT_FILE):
+        return {}
+    try:
+        with open(COOKIE_ALERT_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[Cookie提醒] 状态读取失败: {e}")
+        return {}
+
+
+def save_cookie_alert_state(state):
+    try:
+        os.makedirs(os.path.dirname(COOKIE_ALERT_FILE) or '.', exist_ok=True)
+        tmp = COOKIE_ALERT_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, COOKIE_ALERT_FILE)
+    except Exception as e:
+        print(f"[Cookie提醒] 状态保存失败: {e}")
+
+
+def send_cookie_invalid_email(error):
+    if not SMTP_AUTH_CODE:
+        print("⚠ 没配置 SMTP_AUTH_CODE，无法发送 Cookie 失效提醒")
+        return False
+    body = (
+        "B站监控检测到 Cookie 可能已失效。\n\n"
+        f"检测时间：{datetime.now():%Y-%m-%d %H:%M:%S}\n"
+        f"接口错误：{error}\n\n"
+        "请更新 GitHub Secret：BILI_COOKIE"
+    )
+    subject = "B站监控 Cookie 失效提醒"
+    try:
+        msg = MIMEText(body, 'plain', 'utf-8')
+        msg['From'] = Header(SMTP_SENDER)
+        msg['To'] = Header(SMTP_RECEIVER)
+        msg['Subject'] = Header(subject)
+        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=25)
+        server.login(SMTP_SENDER, SMTP_AUTH_CODE)
+        server.sendmail(SMTP_SENDER, [SMTP_RECEIVER], msg.as_string())
+        server.quit()
+        print(f"📧 Cookie 失效提醒已发送 -> {SMTP_RECEIVER}")
+        return True
+    except Exception as e:
+        print(f"❌ Cookie 失效提醒发送失败: {type(e).__name__}: {e}")
+        return False
+
+
+def notify_cookie_invalid(error):
+    state = load_cookie_alert_state()
+    now = time.time()
+    try:
+        last_alert_at = float(state.get('last_alert_at') or 0)
+    except (TypeError, ValueError):
+        last_alert_at = 0
+    if state.get('active') and now - last_alert_at < COOKIE_ALERT_COOLDOWN:
+        print("[Cookie提醒] 已处于提醒冷却期，本轮不重复发信")
+        return True
+    ok = send_cookie_invalid_email(error)
+    if ok:
+        state.update({
+            'active': True,
+            'last_alert_at': now,
+            'last_error': error,
+        })
+        save_cookie_alert_state(state)
+    return ok
+
+
+def mark_cookie_healthy():
+    state = load_cookie_alert_state()
+    if not state.get('active'):
+        return
+    state.update({
+        'active': False,
+        'recovered_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    })
+    save_cookie_alert_state(state)
+    print("[Cookie提醒] Cookie 已恢复正常")
+
+
 # ==================== B站 API 封装 ====================
 class BiliAPI:
     def __init__(self, cookie: str):
@@ -204,14 +303,17 @@ class BiliAPI:
         url = 'https://api.bilibili.com/x/web-interface/popular'
         async with self.session.get(url, params=signed_params) as resp:
             data = await resp.json()
-            if data['code'] == -352:
+            if data.get('code') == -352:
                 global _wbi_keys_cache
                 with _cache_lock:
                     _wbi_keys_cache["ts"] = 0
                 signed_params = sign_popular_params(pn, ps, self._extract_sessdata())
                 async with self.session.get(url, params=signed_params) as resp2:
                     data = await resp2.json()
-            if data['code'] == 0:
+            if is_cookie_invalid(data):
+                raise CookieInvalidError(cookie_error_text(data))
+            if data.get('code') == 0:
+                mark_cookie_healthy()
                 return data['data']['list'], not data['data'].get('no_more', True)
             print(f"[热门] 获取失败: {data.get('message')}")
             return None, False
@@ -220,19 +322,23 @@ class BiliAPI:
         url = 'https://api.bilibili.com/x/web-interface/view/detail/tag'
         async with self.session.get(url, params={'bvid': bvid}) as resp:
             data = await resp.json()
-            if data['code'] == 0:
+            if is_cookie_invalid(data):
+                raise CookieInvalidError(cookie_error_text(data))
+            if data.get('code') == 0:
                 return [tag['tag_name'] for tag in data['data']]
             return []
 
     async def block_user(self, target_mid: int) -> bool:
         if not self.csrf:
-            print("缺少 bili_jct，无法拉黑")
-            return False
+            raise CookieInvalidError('BILI_COOKIE 缺少 bili_jct')
         url = 'https://api.bilibili.com/x/relation/modify'
         data = {'fid': target_mid, 'act': 5, 'csrf': self.csrf}
         async with self.session.post(url, data=data) as resp:
             result = await resp.json()
-            if result['code'] == 0:
+            if is_cookie_invalid(result):
+                raise CookieInvalidError(cookie_error_text(result))
+            if result.get('code') == 0:
+                mark_cookie_healthy()
                 return True
             print(f"❌ 拉黑失败 {target_mid}: {result.get('message')}")
             return False
@@ -246,9 +352,12 @@ class BiliAPI:
             params = {'re_version': 0, 'pn': pn, 'ps': 50, 'jsonp': 'jsonp', 'web_location': 333.33}
             async with self.session.get(url, params=params) as resp:
                 data = await resp.json()
-            if data['code'] != 0:
-                print(f"[黑名单] 线上拉取失败(第{pn}页): {data.get('message')}")
-                break
+            if is_cookie_invalid(data):
+                raise CookieInvalidError(cookie_error_text(data))
+            if data.get('code') != 0:
+                raise RuntimeError(
+                    f"黑名单第{pn}页抓取失败: {cookie_error_text(data)}"
+                )
             page_list = data['data']['list']
             if not page_list:
                 break
@@ -260,6 +369,7 @@ class BiliAPI:
                 break
             pn += 1
             await asyncio.sleep(0.5)
+        mark_cookie_healthy()
         return mids
 
 
@@ -346,8 +456,10 @@ async def main():
     print(f"⚪ 白名单: {WHITELIST_MIDS}")
 
     if not COOKIE:
-        print("❌ 错误: 没有 cookie，请设置环境变量 BILI_COOKIE")
-        return
+        error = '未设置 BILI_COOKIE'
+        print(f"❌ 错误: {error}")
+        notify_cookie_invalid(error)
+        return 1
 
     blacklist = load_blacklist()
     # 云端首轮状态文件是空的（或缓存被清了），这种情况同样要同步一次线上黑名单，
@@ -356,8 +468,10 @@ async def main():
 
     async with BiliAPI(COOKIE) as api:
         if not api.csrf:
-            print("❌ Cookie 中缺少 bili_jct，拉黑功能不可用")
-            return
+            error = 'BILI_COOKIE 缺少 bili_jct'
+            print(f"❌ {error}，拉黑功能不可用")
+            notify_cookie_invalid(error)
+            return 1
 
         # 云端的状态文件随时可能对不上（缓存被清、换了 runner、记录不全），
         # 所以默认每轮都同步一次线上黑名单（1200 人约 20 秒），
@@ -395,4 +509,9 @@ if __name__ == '__main__':
     print("=" * 50)
     print("B站热门视频关键词拉黑 v4.0 (精简版)")
     print("=" * 50)
-    asyncio.run(main())
+    try:
+        result = asyncio.run(main())
+    except CookieInvalidError as e:
+        notify_cookie_invalid(str(e))
+        result = 1
+    sys.exit(result or 0)
