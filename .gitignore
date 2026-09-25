@@ -6,6 +6,9 @@ cookie*.txt
 # cron-job.org 的 API Key（本地运维用，见 docs/cron-job.org-运维手册.md）
 .cron-job-api-key
 
+# 本地运维文档，不上传仓库
+docs/
+
 # 运行产物
 state/
 *.log
