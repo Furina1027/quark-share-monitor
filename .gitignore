@@ -8,7 +8,3 @@ state/
 *.log
 quark_share_snapshot*
 __pycache__/
-
-# 教育部监控的运行产物（状态/日志/抓到的正文，云端走 actions/cache，不进仓库）
-moe/data/
-moe/logs/
