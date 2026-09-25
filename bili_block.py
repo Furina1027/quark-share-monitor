@@ -191,7 +191,7 @@ class BiliAPI:
         return m.group(1) if m else ""
 
     async def __aenter__(self):
-        connector = aiohttp.TCPConnector(limit_per_host=5, ssl=False)
+        connector = aiohttp.TCPConnector(limit_per_host=5)
         self.session = aiohttp.ClientSession(connector=connector, headers=self.headers)
         return self
 
