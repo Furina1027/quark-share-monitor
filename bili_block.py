@@ -105,7 +105,7 @@ BLOCKED_RECORDS = []
 FILTER_KEYWORD = '鸣潮'
 
 # 白名单：这些 UP 主永远不会被拉黑
-WHITELIST_MIDS = {23084818}
+WHITELIST_MIDS = {23084818, 25876945}
 
 # 请填入你的完整 Cookie (需包含 SESSDATA, bili_jct, DedeUserID)
 COOKIE = os.environ.get('BILI_COOKIE', '').strip()
